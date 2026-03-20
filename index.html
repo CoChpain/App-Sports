@@ -43,6 +43,7 @@
         <th>Extérieur</th>
         <th>Date</th>
         <th>Heure</th>
+        <th>Salle</th>
         <th>Arbitres</th>
         <th>Table</th>
         <th>Actions arbitres</th>
@@ -56,498 +57,499 @@
   <button id="btnAssign">Calculer les arbitres et tables</button>
 
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-  
+
   <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-import {
-  getFirestore, collection, getDocs, setDoc, doc, updateDoc
-} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import {
+      getFirestore, collection, getDocs, setDoc, doc, updateDoc
+    } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyC3sqZaUL1ktECwag4c8c_y3wDMzG7ud2M",
-  authDomain: "planning-da951.firebaseapp.com",
-  projectId: "planning-da951",
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-
-const CLUB = "MONTAIGU VENDEE BASKET CLUB";
-
-/* ---------------------------------------------------------
-   🔧 Conversion robuste des dates Excel → ISO
---------------------------------------------------------- */
-function convertirDateExcelVersISO(val) {
-  if (!val) return "";
-
-  // 1) Format texte FR "21/03/2026"
-  if (typeof val === "string") {
-    const s = val.trim();
-    const parts = s.split("/");
-    if (parts.length === 3) {
-      const [jour, mois, annee] = parts;
-      return `${annee}-${mois.padStart(2,"0")}-${jour.padStart(2,"0")}`;
-    }
-    // déjà ISO
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-    return "";
-  }
-
-  // 2) Format Excel numérique
-  if (typeof val === "number") {
-    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-    const ms = val * 24 * 60 * 60 * 1000;
-    const d = new Date(excelEpoch.getTime() + ms);
-    const annee = d.getUTCFullYear();
-    const mois = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const jour = String(d.getUTCDate()).padStart(2, "0");
-    return `${annee}-${mois}-${jour}`;
-  }
-
-  return "";
-}
-
-/* ---------------------------------------------------------
-   🔧 Construction d'une date fiable (évite Invalid Date)
---------------------------------------------------------- */
-function construireDate(dateISO, heure) {
-  if (!dateISO || !heure) return null;
-  const [annee, mois, jour] = dateISO.split("-");
-  const [h, min] = heure.split(":");
-  return new Date(
-    Number(annee),
-    Number(mois) - 1,
-    Number(jour),
-    Number(h),
-    Number(min),
-    0
-  );
-}
-
-/* ---------------------------------------------------------
-   Catégories / genre
---------------------------------------------------------- */
-function extraireCategorie(division) {
-  const d = (division || "").toUpperCase();
-  const matchJeune = d.match(/U(7|9|11|13|15|18)/);
-  if (matchJeune) return "U" + matchJeune[1];
-  if (d.includes("M") || d.includes("F")) return "SENIORS";
-  return "";
-}
-
-function extraireGenre(division) {
-  const d = (division || "").toUpperCase();
-  if (d.includes("M")) return "M";
-  if (d.includes("F")) return "F";
-  return "";
-}
-
-function ageRank(cat) {
-  const c = (cat || "").toUpperCase();
-  if (c === "U7") return 1;
-  if (c === "U9") return 2;
-  if (c === "U11") return 3;
-  if (c === "U13") return 4;
-  if (c === "U15") return 5;
-  if (c === "U18") return 6;
-  if (c === "SENIORS") return 7;
-  return 0;
-}
-function isYouth(cat) { return ageRank(cat) >= 4 && ageRank(cat) <= 6; }
-function isSenior(cat) { return ageRank(cat) >= 7; }
-
-/* ---------------------------------------------------------
-   Analyse équipe licencié
---------------------------------------------------------- */
-function analyserEquipeLicencie(lic) {
-  const eq = (lic.equipe || "").toUpperCase();
-
-  const matchJeune = eq.match(/U(7|9|11|13|15|18)(M|F)(\d+)/);
-  if (matchJeune) {
-    return {
-      categorie: "U" + matchJeune[1],
-      genre: matchJeune[2],
-      equipe: parseInt(matchJeune[3])
-    };
-  }
-
-  const matchSenior = eq.match(/(RM|DM|NM|PRM|PNM|RF|DF|NF|PRF|PNF)(\d?)/);
-  if (matchSenior) {
-    const prefix = matchSenior[1];
-    const num = matchSenior[2] ? parseInt(matchSenior[2]) : 1;
-    const genre = prefix.includes("M") ? "M" : "F";
-    return {
-      categorie: "SENIORS",
-      genre: genre,
-      equipe: num
-    };
-  }
-
-  return { categorie: "", genre: "", equipe: null };
-}
-
-/* ---------------------------------------------------------
-   Import des matchs (avec date FR corrigée)
---------------------------------------------------------- */
-function extraireEquipeClub(nomEquipe) {
-  const regex = new RegExp(`${CLUB}\\s*-\\s*(\\d+)`, "i");
-  const match = nomEquipe.match(regex);
-  return match ? parseInt(match[1]) : null;
-}
-
-async function importerFichier() {
-  const file = fileInput.files[0];
-  if (!file) return alert("Aucun fichier sélectionné");
-
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data);
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-
-  let index = 1;
-
-  for (const row of rows) {
-    const division = row.Division || "";
-    const equipe1 = row["Equipe 1"] || row["Équipe 1"] || "";
-    const equipe2 = row["Equipe 2"] || row["Équipe 2"] || "";
-    const dateISO = convertirDateExcelVersISO(row.Date);
-    const heure = row.Heure || "";
-
-    const equipeClub1 = extraireEquipeClub(equipe1);
-    const equipeClub2 = extraireEquipeClub(equipe2);
-    if (!equipeClub1 && !equipeClub2) continue;
-
-    const categorie = extraireCategorie(division);
-    const genre = extraireGenre(division);
-
-    const payload = {
-      division,
-      categorie,
-      genre,
-      date: dateISO,
-      heure,
-      domicile: !!equipeClub1,
-      exterieur: !!equipeClub2,
-      equipe_club: equipeClub1 || equipeClub2,
-      equipe_reception: equipe1,
-      equipe_exterieure: equipe2,
-      besoin_arbitres: true,
-      besoin_table: true,
-      officiel_arbitre: false,
-      arbitres_assignes: [],
-      table_assignes: []
+    const firebaseConfig = {
+      apiKey: "AIzaSyC3sqZaUL1ktECwag4c8c_y3wDMzG7ud2M",
+      authDomain: "planning-da951.firebaseapp.com",
+      projectId: "planning-da951",
     };
 
-    await setDoc(doc(db, "matchs", `match_${index++}`), payload);
-  }
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
 
-  alert("Import terminé !");
-  chargerMatchs();
-}
+    const CLUB = "MONTAIGU VENDEE BASKET CLUB";
 
-/* ---------------------------------------------------------
-   Affichage des matchs
---------------------------------------------------------- */
-async function chargerMatchs() {
-  tbodyMatchs.innerHTML = "";
-  const snap = await getDocs(collection(db, "matchs"));
-  snap.forEach(d => {
-    const m = d.data();
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${d.id}</td>
-      <td>${m.division}</td>
-      <td>${m.categorie}</td>
-      <td>${m.genre}</td>
-      <td>${m.equipe_club}</td>
-      <td>${m.domicile ? "Oui" : "Non"}</td>
-      <td>${m.exterieur ? "Oui" : "Non"}</td>
-      <td>${m.equipe_reception}</td>
-      <td>${m.equipe_exterieure}</td>
-      <td>${m.date}</td>
-      <td>${m.heure}</td>
-      <td>${(m.arbitres_assignes || []).join(", ")}</td>
-      <td>${(m.table_assignes || []).join(", ")}</td>
-      <td><button onclick="modifierArbitres('${d.id}')">Modifier</button></td>
-      <td><button onclick="modifierTable('${d.id}')">Modifier</button></td>
-    `;
-    tbodyMatchs.appendChild(tr);
-  });
-}
+    /* ---------------------------------------------------------
+       🔧 Conversion robuste des dates Excel → ISO
+    --------------------------------------------------------- */
+    function convertirDateExcelVersISO(val) {
+      if (!val) return "";
 
-/* ---------------------------------------------------------
-   Génération des équipes
---------------------------------------------------------- */
-async function genererEquipes() {
-  const licSnap = await getDocs(collection(db, "licencies"));
-  const equipes = {};
-
-  licSnap.forEach(docSnap => {
-    const lic = docSnap.data();
-    const info = analyserEquipeLicencie(lic);
-    if (!info.categorie || !info.genre || !info.equipe) return;
-
-    const key = `${info.categorie}${info.genre}${info.equipe}`;
-    if (!equipes[key]) {
-      equipes[key] = {
-        categorie: info.categorie,
-        genre: info.genre,
-        numero: info.equipe,
-        joueurs: []
-      };
-    }
-    equipes[key].joueurs.push(docSnap.id);
-  });
-
-  for (const key of Object.keys(equipes)) {
-    await setDoc(doc(db, "equipes", key), equipes[key]);
-  }
-
-  alert("Équipes générées !");
-}
-
-/* ---------------------------------------------------------
-   Associer matchs ↔ équipes
---------------------------------------------------------- */
-async function associerMatchsAuxEquipes() {
-  const matchSnap = await getDocs(collection(db, "matchs"));
-
-  for (const d of matchSnap.docs) {
-    const m = d.data();
-    if (!m.categorie || !m.genre || !m.equipe_club) continue;
-
-    const key = `${m.categorie}${m.genre}${m.equipe_club}`;
-
-    await setDoc(doc(db, "equipes", key), {
-      categorie: m.categorie,
-      genre: m.genre,
-      numero: m.equipe_club,
-      match_du_weekend: {
-        date: m.date,
-        heure: m.heure,
-        domicile: m.domicile,
-        exterieur: m.exterieur,
-        adversaire: m.equipe_exterieure
+      // Format texte FR "21/03/2026"
+      if (typeof val === "string") {
+        const s = val.trim();
+        const parts = s.split("/");
+        if (parts.length === 3) {
+          const [jour, mois, annee] = parts;
+          return `${annee}-${mois.padStart(2,"0")}-${jour.padStart(2,"0")}`;
+        }
+        return "";
       }
-    }, { merge: true });
-  }
 
-  alert("Matchs associés !");
-}
+      // Format Excel numérique
+      if (typeof val === "number") {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+        const ms = val * 24 * 60 * 60 * 1000;
+        const d = new Date(excelEpoch.getTime() + ms);
+        const annee = d.getUTCFullYear();
+        const mois = String(d.getUTCMonth() + 1).padStart(2, "0");
+        const jour = String(d.getUTCDate()).padStart(2, "0");
+        return `${annee}-${mois}-${jour}`;
+      }
 
-/* ---------------------------------------------------------
-   Règles A & B
---------------------------------------------------------- */
-function estDansFenetre2h(matchLic, matchAffect) {
-  const d1 = construireDate(matchLic?.date, matchLic?.heure);
-  const d2 = construireDate(matchAffect.date, matchAffect.heure);
-  if (!d1 || !d2) return false;
-  return Math.abs(d1 - d2) <= 2 * 60 * 60 * 1000;
-}
-
-function indisponibleExterieur(matchLic) {
-  return matchLic && matchLic.exterieur === true;
-}
-
-function sontConsecutifs(m1, m2) {
-  const d1 = construireDate(m1.date, m1.heure);
-  const d2 = construireDate(m2.date, m2.heure);
-  if (!d1 || !d2) return false;
-  return Math.abs(d2 - d1) <= 2 * 60 * 60 * 1000;
-}
-
-/* ---------------------------------------------------------
-   Éligibilité
---------------------------------------------------------- */
-function eligibleArbitreBase(lic, match) {
-  const catL = lic.categorie;
-  const catM = match.categorie;
-  if (ageRank(catL) <= 3) return false;
-  if (isSenior(catL)) return true;
-  if (isYouth(catL)) {
-    if (lic.derogation_arbitrage) return true;
-    return ageRank(catM) < ageRank(catL);
-  }
-  return false;
-}
-
-function eligibleTableBase(lic, match) {
-  const catL = lic.categorie;
-  if (ageRank(catL) <= 3) return false;
-  if (isSenior(catL)) return true;
-  return true;
-}
-
-/* ---------------------------------------------------------
-   Attribution
---------------------------------------------------------- */
-async function assignerPermanences() {
-  const licSnap = await getDocs(collection(db, "licencies"));
-  const eqSnap = await getDocs(collection(db, "equipes"));
-  const matchSnap = await getDocs(collection(db, "matchs"));
-
-  const equipes = {};
-  eqSnap.forEach(d => equipes[d.id] = d.data());
-
-  const licencies = [];
-  licSnap.forEach(d => {
-    const lic = d.data();
-    const info = analyserEquipeLicencie(lic);
-    const key = info.categorie && info.genre && info.equipe
-      ? `${info.categorie}${info.genre}${info.equipe}` : null;
-
-    licencies.push({
-      id: d.id,
-      ...lic,
-      categorie: info.categorie,
-      genre: info.genre,
-      equipe: info.equipe,
-      equipeKey: key,
-      charge: 0
-    });
-  });
-
-  const updates = [];
-  matchSnap.forEach(d => updates.push({ id: d.id, ...d.data() }));
-
-  updates.sort((a, b) => {
-    const da = construireDate(a.date, a.heure);
-    const db = construireDate(b.date, b.heure);
-    return da - db;
-  });
-
-  // seniors sur 2 matchs consécutifs
-  for (let i = 0; i < updates.length - 1; i++) {
-    const m1 = updates[i];
-    const m2 = updates[i + 1];
-    if (!m1.domicile || !m2.domicile) continue;
-    if (!m1.besoin_arbitres || !m2.besoin_arbitres) continue;
-    if (!sontConsecutifs(m1, m2)) continue;
-
-    const candidats = licencies
-      .filter(l => {
-        if (!isSenior(l.categorie)) return false;
-        if (!eligibleArbitreBase(l, m1) || !eligibleArbitreBase(l, m2)) return false;
-        const matchLic = l.equipeKey ? equipes[l.equipeKey]?.match_du_weekend : null;
-        if (indisponibleExterieur(matchLic)) return false;
-        if (!estDansFenetre2h(matchLic, m1) || !estDansFenetre2h(matchLic, m2)) return false;
-        return true;
-      })
-      .sort((a, b) => a.charge - b.charge);
-
-    if (candidats.length > 0) {
-      const senior = candidats[0];
-      m1.arbitres_assignes.push(senior.id);
-      m2.arbitres_assignes.push(senior.id);
-      senior.charge += 2;
+      return "";
     }
-  }
 
-  // attribution normale
-  for (const m of updates) {
-    if (!m.domicile) continue;
+    /* ---------------------------------------------------------
+       🔧 Construction d'une date fiable
+    --------------------------------------------------------- */
+    function construireDate(dateISO, heure) {
+      if (!dateISO || !heure) return null;
+      const [annee, mois, jour] = dateISO.split("-");
+      const [h, min] = heure.split(":");
+      return new Date(
+        Number(annee),
+        Number(mois) - 1,
+        Number(jour),
+        Number(h),
+        Number(min),
+        0
+      );
+    }
 
-    m.arbitres_assignes = m.arbitres_assignes || [];
-    m.table_assignes = m.table_assignes || [];
+    /* ---------------------------------------------------------
+       Catégories / genre
+    --------------------------------------------------------- */
+    function extraireCategorie(division) {
+      const d = (division || "").toUpperCase();
+      const matchJeune = d.match(/U(7|9|11|13|15|18)/);
+      if (matchJeune) return "U" + matchJeune[1];
+      if (d.includes("M") || d.includes("F")) return "SENIORS";
+      return "";
+    }
 
-    // Arbitres
-    if (m.besoin_arbitres && !m.officiel_arbitre) {
-      const candidats = licencies
-        .filter(l => {
-          if (!eligibleArbitreBase(l, m)) return false;
-          const matchLic = l.equipeKey ? equipes[l.equipeKey]?.match_du_weekend : null;
-          if (indisponibleExterieur(matchLic)) return false;
-          if (!estDansFenetre2h(matchLic, m)) return false;
-          return true;
-        })
-        .sort((a, b) => a.charge - b.charge);
+    function extraireGenre(division) {
+      const d = (division || "").toUpperCase();
+      if (d.includes("M")) return "M";
+      if (d.includes("F")) return "F";
+      return "";
+    }
 
-      for (const c of candidats) {
-        if (m.arbitres_assignes.length >= 2) break;
-        if (!m.arbitres_assignes.includes(c.id)) {
-          m.arbitres_assignes.push(c.id);
-          c.charge++;
+    function ageRank(cat) {
+      const c = (cat || "").toUpperCase();
+      if (c === "U7") return 1;
+      if (c === "U9") return 2;
+      if (c === "U11") return 3;
+      if (c === "U13") return 4;
+      if (c === "U15") return 5;
+      if (c === "U18") return 6;
+      if (c === "SENIORS") return 7;
+      return 0;
+    }
+    function isYouth(cat) { return ageRank(cat) >= 4 && ageRank(cat) <= 6; }
+    function isSenior(cat) { return ageRank(cat) >= 7; }
+
+    /* ---------------------------------------------------------
+       Analyse équipe licencié
+    --------------------------------------------------------- */
+    function analyserEquipeLicencie(lic) {
+      const eq = (lic.equipe || "").toUpperCase();
+
+      const matchJeune = eq.match(/U(7|9|11|13|15|18)(M|F)(\d+)/);
+      if (matchJeune) {
+        return {
+          categorie: "U" + matchJeune[1],
+          genre: matchJeune[2],
+          equipe: parseInt(matchJeune[3])
+        };
+      }
+
+      const matchSenior = eq.match(/(RM|DM|NM|PRM|PNM|RF|DF|NF|PRF|PNF)(\d?)/);
+      if (matchSenior) {
+        const prefix = matchSenior[1];
+        const num = matchSenior[2] ? parseInt(matchSenior[2]) : 1;
+        const genre = prefix.includes("M") ? "M" : "F";
+        return {
+          categorie: "SENIORS",
+          genre: genre,
+          equipe: num
+        };
+      }
+
+      return { categorie: "", genre: "", equipe: null };
+    }
+
+    /* ---------------------------------------------------------
+       Import des matchs (corrigé pour tes colonnes)
+    --------------------------------------------------------- */
+    async function importerFichier() {
+      const file = fileInput.files[0];
+      if (!file) return alert("Aucun fichier sélectionné");
+
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      let index = 1;
+
+      for (const row of rows) {
+
+        const division = row["division"] || row["Division"] || "";
+        const equipe1 = row["equipe 1"] || row["Equipe 1"] || row["Équipe 1"] || "";
+        const equipe2 = row["equipe 2"] || row["Equipe 2"] || row["Équipe 2"] || "";
+        const salle   = row["salle"] || row["Salle"] || "";
+
+        const bruteDate = row["date de rencontre"] || row["Date de rencontre"] || "";
+        const dateISO = convertirDateExcelVersISO(bruteDate);
+
+        const heure = row["heure"] || row["Heure"] || "";
+
+        const equipeClub1 = extraireEquipeClub(equipe1);
+        const equipeClub2 = extraireEquipeClub(equipe2);
+        if (!equipeClub1 && !equipeClub2) continue;
+
+        const categorie = extraireCategorie(division);
+        const genre = extraireGenre(division);
+
+        const payload = {
+          division,
+          categorie,
+          genre,
+          date: dateISO,
+          heure,
+          salle,
+          domicile: !!equipeClub1,
+          exterieur: !!equipeClub2,
+          equipe_club: equipeClub1 || equipeClub2,
+          equipe_reception: equipe1,
+          equipe_exterieure: equipe2,
+          besoin_arbitres: true,
+          besoin_table: true,
+          officiel_arbitre: false,
+          arbitres_assignes: [],
+          table_assignes: []
+        };
+
+        await setDoc(doc(db, "matchs", `match_${index++}`), payload);
+      }
+
+      alert("Import terminé !");
+      chargerMatchs();
+    }
+
+    /* ---------------------------------------------------------
+       Affichage des matchs
+    --------------------------------------------------------- */
+    async function chargerMatchs() {
+      tbodyMatchs.innerHTML = "";
+      const snap = await getDocs(collection(db, "matchs"));
+      snap.forEach(d => {
+        const m = d.data();
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${d.id}</td>
+          <td>${m.division}</td>
+          <td>${m.categorie}</td>
+          <td>${m.genre}</td>
+          <td>${m.equipe_club}</td>
+          <td>${m.domicile ? "Oui" : "Non"}</td>
+          <td>${m.exterieur ? "Oui" : "Non"}</td>
+          <td>${m.equipe_reception}</td>
+          <td>${m.equipe_exterieure}</td>
+          <td>${m.date}</td>
+          <td>${m.heure}</td>
+          <td>${m.salle}</td>
+          <td>${(m.arbitres_assignes || []).join(", ")}</td>
+          <td>${(m.table_assignes || []).join(", ")}</td>
+          <td><button onclick="modifierArbitres('${d.id}')">Modifier</button></td>
+          <td><button onclick="modifierTable('${d.id}')">Modifier</button></td>
+        `;
+        tbodyMatchs.appendChild(tr);
+      });
+    }
+
+    /* ---------------------------------------------------------
+       Génération des équipes
+    --------------------------------------------------------- */
+    async function genererEquipes() {
+      const licSnap = await getDocs(collection(db, "licencies"));
+      const equipes = {};
+
+      licSnap.forEach(docSnap => {
+        const lic = docSnap.data();
+        const info = analyserEquipeLicencie(lic);
+        if (!info.categorie || !info.genre || !info.equipe) return;
+
+        const key = `${info.categorie}${info.genre}${info.equipe}`;
+        if (!equipes[key]) {
+          equipes[key] = {
+            categorie: info.categorie,
+            genre: info.genre,
+            numero: info.equipe,
+            joueurs: []
+          };
+        }
+        equipes[key].joueurs.push(docSnap.id);
+      });
+
+      for (const key of Object.keys(equipes)) {
+        await setDoc(doc(db, "equipes", key), equipes[key]);
+      }
+
+      alert("Équipes générées !");
+    }
+
+    /* ---------------------------------------------------------
+       Associer matchs ↔ équipes
+    --------------------------------------------------------- */
+    async function associerMatchsAuxEquipes() {
+      const matchSnap = await getDocs(collection(db, "matchs"));
+
+      for (const d of matchSnap.docs) {
+        const m = d.data();
+        if (!m.categorie || !m.genre || !m.equipe_club) continue;
+
+        const key = `${m.categorie}${m.genre}${m.equipe_club}`;
+
+        await setDoc(doc(db, "equipes", key), {
+          categorie: m.categorie,
+          genre: m.genre,
+          numero: m.equipe_club,
+          match_du_weekend: {
+            date: m.date,
+            heure: m.heure,
+            salle: m.salle,
+            domicile: m.domicile,
+            exterieur: m.exterieur,
+            adversaire: m.equipe_exterieure
+          }
+        }, { merge: true });
+      }
+
+      alert("Matchs associés !");
+    }
+
+    /* ---------------------------------------------------------
+       Règles A & B
+    --------------------------------------------------------- */
+    function estDansFenetre2h(matchLic, matchAffect) {
+      const d1 = construireDate(matchLic?.date, matchLic?.heure);
+      const d2 = construireDate(matchAffect.date, matchAffect.heure);
+      if (!d1 || !d2) return false;
+      return Math.abs(d1 - d2) <= 2 * 60 * 60 * 1000;
+    }
+
+    function indisponibleExterieur(matchLic) {
+      return matchLic && matchLic.exterieur === true;
+    }
+
+    function sontConsecutifs(m1, m2) {
+      const d1 = construireDate(m1.date, m1.heure);
+      const d2 = construireDate(m2.date, m2.heure);
+      if (!d1 || !d2) return false;
+      return Math.abs(d2 - d1) <= 2 * 60 * 60 * 1000;
+    }
+
+    /* ---------------------------------------------------------
+       Éligibilité
+    --------------------------------------------------------- */
+    function eligibleArbitreBase(lic, match) {
+      const catL = lic.categorie;
+      const catM = match.categorie;
+      if (ageRank(catL) <= 3) return false;
+      if (isSenior(catL)) return true;
+      if (isYouth(catL)) {
+        if (lic.derogation_arbitrage) return true;
+        return ageRank(catM) < ageRank(catL);
+      }
+      return false;
+    }
+
+    function eligibleTableBase(lic, match) {
+      const catL = lic.categorie;
+      if (ageRank(catL) <= 3) return false;
+      return true;
+    }
+
+    /* ---------------------------------------------------------
+       Attribution
+    --------------------------------------------------------- */
+    async function assignerPermanences() {
+      const licSnap = await getDocs(collection(db, "licencies"));
+      const eqSnap = await getDocs(collection(db, "equipes"));
+      const matchSnap = await getDocs(collection(db, "matchs"));
+
+      const equipes = {};
+      eqSnap.forEach(d => equipes[d.id] = d.data());
+
+      const licencies = [];
+      licSnap.forEach(d => {
+        const lic = d.data();
+        const info = analyserEquipeLicencie(lic);
+        const key = info.categorie && info.genre && info.equipe
+          ? `${info.categorie}${info.genre}${info.equipe}` : null;
+
+        licencies.push({
+          id: d.id,
+          ...lic,
+          categorie: info.categorie,
+          genre: info.genre,
+          equipe: info.equipe,
+          equipeKey: key,
+          charge: 0
+        });
+      });
+
+      const updates = [];
+      matchSnap.forEach(d => updates.push({ id: d.id, ...d.data() }));
+
+      updates.sort((a, b) => {
+        const da = construireDate(a.date, a.heure);
+        const db = construireDate(b.date, b.heure);
+        return da - db;
+      });
+
+      // seniors sur 2 matchs consécutifs (même salle)
+      for (let i = 0; i < updates.length - 1; i++) {
+        const m1 = updates[i];
+        const m2 = updates[i + 1];
+        if (!m1.domicile || !m2.domicile) continue;
+        if (!m1.besoin_arbitres || !m2.besoin_arbitres) continue;
+        if (!sontConsecutifs(m1, m2)) continue;
+        if (m1.salle !== m2.salle) continue; // 👈 règle salle identique
+
+        const candidats = licencies
+          .filter(l => {
+            if (!isSenior(l.categorie)) return false;
+            if (!eligibleArbitreBase(l, m1) || !eligibleArbitreBase(l, m2)) return false;
+            const matchLic = l.equipeKey ? equipes[l.equipeKey]?.match_du_weekend : null;
+            if (indisponibleExterieur(matchLic)) return false;
+            if (!estDansFenetre2h(matchLic, m1) || !estDansFenetre2h(matchLic, m2)) return false;
+            return true;
+          })
+          .sort((a, b) => a.charge - b.charge);
+
+        if (candidats.length > 0) {
+          const senior = candidats[0];
+          m1.arbitres_assignes.push(senior.id);
+          m2.arbitres_assignes.push(senior.id);
+          senior.charge += 2;
         }
       }
-    }
 
-    // Table
-    if (m.besoin_table) {
-      const candidats = licencies
-        .filter(l => {
-          if (!eligibleTableBase(l, m)) return false;
-          const matchLic = l.equipeKey ? equipes[l.equipeKey]?.match_du_weekend : null;
-          if (indisponibleExterieur(matchLic)) return false;
-          if (!estDansFenetre2h(matchLic, m)) return false;
-          return true;
-        })
-        .sort((a, b) => a.charge - b.charge);
+            // attribution normale
+      for (const m of updates) {
+        if (!m.domicile) continue;
 
-      for (const c of candidats) {
-        if (m.table_assignes.length >= 2) break;
-        if (!m.table_assignes.includes(c.id)) {
-          m.table_assignes.push(c.id);
-          c.charge++;
+        m.arbitres_assignes = m.arbitres_assignes || [];
+        m.table_assignes = m.table_assignes || [];
+
+              // Arbitres
+        if (m.besoin_arbitres && !m.officiel_arbitre) {
+          const candidats = licencies
+            .filter(l => {
+              if (!eligibleArbitreBase(l, m)) return false;
+              const matchLic = l.equipeKey ? equipes[l.equipeKey]?.match_du_weekend : null;
+              if (indisponibleExterieur(matchLic)) return false;
+              if (!estDansFenetre2h(matchLic, m)) return false;
+              return true;
+            })
+            .sort((a, b) => a.charge - b.charge);
+
+          for (const c of candidats) {
+            if (m.arbitres_assignes.length >= 2) break;
+            if (!m.arbitres_assignes.includes(c.id)) {
+              m.arbitres_assignes.push(c.id);
+              c.charge++;
+            }
+          }
+        }
+
+        // Table
+        if (m.besoin_table) {
+          const candidats = licencies
+            .filter(l => {
+              if (!eligibleTableBase(l, m)) return false;
+              const matchLic = l.equipeKey ? equipes[l.equipeKey]?.match_du_weekend : null;
+              if (indisponibleExterieur(matchLic)) return false;
+              if (!estDansFenetre2h(matchLic, m)) return false;
+              return true;
+            })
+            .sort((a, b) => a.charge - b.charge);
+
+          for (const c of candidats) {
+            if (m.table_assignes.length >= 2) break;
+            if (!m.table_assignes.includes(c.id)) {
+              m.table_assignes.push(c.id);
+              c.charge++;
+            }
+          }
         }
       }
+
+      // sauvegarde
+      for (const m of updates) {
+        await updateDoc(doc(db, "matchs", m.id), {
+          arbitres_assignes: m.arbitres_assignes,
+          table_assignes: m.table_assignes
+        });
+      }
+
+      alert("Attribution terminée !");
+      chargerMatchs();
     }
-  }
 
-  // sauvegarde
-  for (const m of updates) {
-    await updateDoc(doc(db, "matchs", m.id), {
-      arbitres_assignes: m.arbitres_assignes,
-      table_assignes: m.table_assignes
-    });
-  }
+    /* ---------------------------------------------------------
+       Interface modif arbitres / table
+    --------------------------------------------------------- */
+    window.modifierArbitres = async function(idMatch) {
+      const nouveau = prompt("IDs des arbitres (séparés par des virgules) :");
+      if (!nouveau) return;
+      const liste = nouveau.split(",").map(s => s.trim()).filter(Boolean);
+      await updateDoc(doc(db, "matchs", idMatch), { arbitres_assignes: liste });
+      chargerMatchs();
+    };
 
-  alert("Attribution terminée !");
-  chargerMatchs();
-}
+    window.modifierTable = async function(idMatch) {
+      const nouveau = prompt("IDs des personnes de table (séparés par des virgules) :");
+      if (!nouveau) return;
+      const liste = nouveau.split(",").map(s => s.trim()).filter(Boolean);
+      await updateDoc(doc(db, "matchs", idMatch), { table_assignes: liste });
+      chargerMatchs();
+    };
 
-/* ---------------------------------------------------------
-   Interface modif arbitres / table
---------------------------------------------------------- */
-window.modifierArbitres = async function(idMatch) {
-  const nouveau = prompt("IDs des arbitres (séparés par des virgules) :");
-  if (!nouveau) return;
-  const liste = nouveau.split(",").map(s => s.trim()).filter(Boolean);
-  await updateDoc(doc(db, "matchs", idMatch), { arbitres_assignes: liste });
-  chargerMatchs();
-};
+    /* ---------------------------------------------------------
+       Récupération des éléments DOM
+    --------------------------------------------------------- */
+    const fileInput   = document.getElementById("fileInput");
+    const btnImport   = document.getElementById("btnImport");
+    const btnEquipes  = document.getElementById("btnEquipes");
+    const btnAssocier = document.getElementById("btnAssocier");
+    const btnReload   = document.getElementById("btnReload");
+    const btnAssign   = document.getElementById("btnAssign");
+    const tbodyMatchs = document.getElementById("tbody-matchs");
+    const importStatus = document.getElementById("importStatus");
 
-window.modifierTable = async function(idMatch) {
-  const nouveau = prompt("IDs des personnes de table (séparés par des virgules) :");
-  if (!nouveau) return;
-  const liste = nouveau.split(",").map(s => s.trim()).filter(Boolean);
-  await updateDoc(doc(db, "matchs", idMatch), { table_assignes: liste });
-  chargerMatchs();
-};
+    /* ---------------------------------------------------------
+       Événements
+    --------------------------------------------------------- */
+    btnImport.addEventListener("click", () => importerFichier().catch(console.error));
+    btnEquipes.addEventListener("click", () => genererEquipes().catch(console.error));
+    btnAssocier.addEventListener("click", () => associerMatchsAuxEquipes().catch(console.error));
+    btnReload.addEventListener("click", () => chargerMatchs().catch(console.error));
+    btnAssign.addEventListener("click", () => assignerPermanences().catch(console.error));
 
-/* ---------------------------------------------------------
-   Récupération des éléments DOM
---------------------------------------------------------- */
-const fileInput   = document.getElementById("fileInput");
-const btnImport   = document.getElementById("btnImport");
-const btnEquipes  = document.getElementById("btnEquipes");
-const btnAssocier = document.getElementById("btnAssocier");
-const btnReload   = document.getElementById("btnReload");
-const btnAssign   = document.getElementById("btnAssign");
-const tbodyMatchs = document.getElementById("tbody-matchs");
-
-/* ---------------------------------------------------------
-   Événements
---------------------------------------------------------- */
-btnImport.addEventListener("click", () => importerFichier().catch(console.error));
-btnEquipes.addEventListener("click", () => genererEquipes().catch(console.error));
-btnAssocier.addEventListener("click", () => associerMatchsAuxEquipes().catch(console.error));
-btnReload.addEventListener("click", () => chargerMatchs().catch(console.error));
-btnAssign.addEventListener("click", () => assignerPermanences().catch(console.error));
-
-/* ---------------------------------------------------------
-   Chargement initial
---------------------------------------------------------- */
-chargerMatchs().catch(console.error);
-</script>
+    /* ---------------------------------------------------------
+       Chargement initial
+    --------------------------------------------------------- */
+    chargerMatchs().catch(console.error);
+  </script>
 </body>
 </html>
