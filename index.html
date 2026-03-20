@@ -2,45 +2,55 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Planning arbitrage / table</title>
+  <title>Planning MONTAIGU VENDÉE BASKET CLUB</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
+    h1, h2 { margin-bottom: 10px; }
     table { border-collapse: collapse; width: 100%; margin-top: 20px; }
     th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: center; }
     th { background: #f0f0f0; }
     button { padding: 8px 14px; margin-top: 10px; cursor: pointer; }
+    #importStatus { margin-top: 10px; font-size: 0.9rem; }
   </style>
 </head>
 <body>
-  <h1>Planning du week-end</h1>
+  <h1>Planning MONTAIGU VENDÉE BASKET CLUB</h1>
 
-  <button id="btn-assign">Calculer et attribuer les permanences</button>
+  <h2>📁 Déposer votre fichier de matchs</h2>
+  <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
+  <button id="btnImport">Importer dans Firestore</button>
+  <div id="importStatus"></div>
 
-  <table id="table-matchs">
+  <h2>📅 Matchs importés</h2>
+  <button id="btnReload">Recharger les matchs</button>
+  <table>
     <thead>
       <tr>
-        <th>Date</th>
-        <th>Heure</th>
+        <th>Division</th>
         <th>Catégorie</th>
+        <th>Équipe club</th>
+        <th>Domicile</th>
+        <th>Extérieur</th>
         <th>Réception</th>
         <th>Extérieur</th>
-        <th>Arbitres</th>
-        <th>Table</th>
+        <th>Date</th>
+        <th>Heure</th>
       </tr>
     </thead>
-    <tbody id="tbody-matchs">
-      <!-- lignes générées en JS -->
-    </tbody>
+    <tbody id="tbody-matchs"></tbody>
   </table>
 
-  <!-- Firebase SDK -->
+  <!-- Librairie XLSX pour lire les fichiers Excel -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+  <!-- Firebase + Firestore -->
   <script type="module">
-    // 🔥 1. Config Firebase (copie depuis ta console Firebase → Config Web)
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-    import { 
-      getFirestore, collection, getDocs, doc, updateDoc 
+    import {
+      getFirestore, collection, getDocs, setDoc, doc
     } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
+    // 🔥 Config Firebase (adaptée à ton projet)
     const firebaseConfig = {
       apiKey: "AIzaSyC3sqZaUL1ktECwag4c8c_y3wDMzG7ud2M",
       authDomain: "planning-da951.firebaseapp.com",
@@ -50,78 +60,113 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    const tbody = document.getElementById("tbody-matchs");
-    const btnAssign = document.getElementById("btn-assign");
+    const CLUB = "MONTAIGU VENDEE BASKET CLUB";
 
-    // 🔥 2. Charger les matchs depuis Firestore
-    async function chargerMatchs() {
-      tbody.innerHTML = "";
-      const matchsSnap = await getDocs(collection(db, "matchs"));
+    const fileInput = document.getElementById("fileInput");
+    const btnImport = document.getElementById("btnImport");
+    const importStatus = document.getElementById("importStatus");
+    const tbodyMatchs = document.getElementById("tbody-matchs");
+    const btnReload = document.getElementById("btnReload");
 
-      matchsSnap.forEach(docSnap => {
-        const m = docSnap.data();
-        const tr = document.createElement("tr");
-        tr.dataset.id = docSnap.id;
-
-        tr.innerHTML = `
-          <td>${m.date || ""}</td>
-          <td>${m.heure || ""}</td>
-          <td>${m.categorie || ""}</td>
-          <td>${m.equipe_reception || ""}</td>
-          <td>${m.equipe_exterieure || ""}</td>
-          <td>${(m.arbitres_assignes || []).join(", ")}</td>
-          <td>${(m.table_assignes || []).join(", ")}</td>
-        `;
-
-        tbody.appendChild(tr);
-      });
+    function extraireCategorie(division) {
+      const match = division.match(/U\d+|Seniors/i);
+      return match ? match[0].toUpperCase() : "";
     }
 
-    // 🔥 3. Fonction d’assignation (squelette)
-    async function assignerPermanences() {
-      // 1) Récupérer tous les licenciés
-      const licenciesSnap = await getDocs(collection(db, "licencies"));
-      const licencies = [];
-      licenciesSnap.forEach(d => licencies.push({ id: d.id, ...d.data() }));
+    function extraireEquipeClub(nomEquipe) {
+      const regex = new RegExp(`${CLUB}\\s*-\\s*(\\d+)`, "i");
+      const match = nomEquipe.match(regex);
+      return match ? parseInt(match[1]) : null;
+    }
 
-      // 2) Récupérer tous les matchs
-      const matchsSnap = await getDocs(collection(db, "matchs"));
-      const updates = [];
-
-      matchsSnap.forEach(docSnap => {
-        const m = docSnap.data();
-
-        // 👉 Ici tu mettras tes règles :
-        // - filtrer les candidats
-        // - choisir arbitres / table
-        // Pour l’instant, on met juste des tableaux vides ou un texte de test.
-
-        const arbitres = []; // ex: ["Dupont_Lucas"]
-        const tables = [];   // ex: ["Martin_Emma"]
-
-        updates.push({ id: docSnap.id, arbitres, tables });
-      });
-
-      // 3) Appliquer les mises à jour dans Firestore
-      for (const u of updates) {
-        const ref = doc(db, "matchs", u.id);
-        await updateDoc(ref, {
-          arbitres_assignes: u.arbitres,
-          table_assignes: u.tables
-        });
+    async function importerFichier() {
+      if (!fileInput.files.length) {
+        importStatus.textContent = "❌ Aucun fichier sélectionné.";
+        return;
       }
 
-      // 4) Recharger l’affichage
+      const file = fileInput.files[0];
+      importStatus.textContent = "⏳ Lecture du fichier...";
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      importStatus.textContent = "⏳ Analyse et import des matchs...";
+      let index = 1;
+
+      for (const row of rows) {
+        const division = row.Division || row["DIVISION"] || "";
+        const equipe1 = row["Equipe 1"] || row["Équipe 1"] || row["EQUIPE 1"] || "";
+        const equipe2 = row["Equipe 2"] || row["Équipe 2"] || row["EQUIPE 2"] || "";
+        const date = row.Date || row["DATE"] || "";
+        const heure = row.Heure || row["HEURE"] || "";
+
+        const equipeClub1 = extraireEquipeClub(equipe1);
+        const equipeClub2 = extraireEquipeClub(equipe2);
+
+        if (!equipeClub1 && !equipeClub2) {
+          continue; // match sans Montaigu
+        }
+
+        const categorie = extraireCategorie(division);
+
+        const payload = {
+          division,
+          categorie,
+          date,
+          heure,
+          domicile: !!equipeClub1,
+          exterieur: !!equipeClub2,
+          equipe_club: equipeClub1 || equipeClub2,
+          equipe_reception: equipe1,
+          equipe_exterieure: equipe2,
+          arbitres_assignes: [],
+          table_assignes: []
+        };
+
+        const docId = `match_${index++}`;
+        await setDoc(doc(db, "matchs", docId), payload);
+      }
+
+      importStatus.textContent = "✅ Import terminé !";
       await chargerMatchs();
-      alert("Permanences recalculées (squelette).");
     }
 
-    // 🔥 4. Lier le bouton
-    btnAssign.addEventListener("click", () => {
-      assignerPermanences().catch(console.error);
+    async function chargerMatchs() {
+      tbodyMatchs.innerHTML = "";
+      const snap = await getDocs(collection(db, "matchs"));
+      snap.forEach(d => {
+        const m = d.data();
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${m.division || ""}</td>
+          <td>${m.categorie || ""}</td>
+          <td>${m.equipe_club || ""}</td>
+          <td>${m.domicile ? "Oui" : "Non"}</td>
+          <td>${m.exterieur ? "Oui" : "Non"}</td>
+          <td>${m.equipe_reception || ""}</td>
+          <td>${m.equipe_exterieure || ""}</td>
+          <td>${m.date || ""}</td>
+          <td>${m.heure || ""}</td>
+        `;
+        tbodyMatchs.appendChild(tr);
+      });
+    }
+
+    btnImport.addEventListener("click", () => {
+      importerFichier().catch(err => {
+        console.error(err);
+        importStatus.textContent = "❌ Erreur lors de l'import (voir console).";
+      });
     });
 
-    // 🔥 5. Chargement initial
+    btnReload.addEventListener("click", () => {
+      chargerMatchs().catch(console.error);
+    });
+
+    // Chargement initial
     chargerMatchs().catch(console.error);
   </script>
 </body>
