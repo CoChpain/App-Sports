@@ -14,15 +14,19 @@
   </style>
 </head>
 <body>
+
   <h1>Planning MONTAIGU VENDÉE BASKET CLUB</h1>
 
+  <!-- UPLOAD FICHIER -->
   <h2>📁 Déposer votre fichier de matchs</h2>
   <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
   <button id="btnImport">Importer dans Firestore</button>
   <div id="importStatus"></div>
 
+  <!-- AFFICHAGE MATCHS -->
   <h2>📅 Matchs importés</h2>
   <button id="btnReload">Recharger les matchs</button>
+
   <table>
     <thead>
       <tr>
@@ -35,22 +39,28 @@
         <th>Extérieur</th>
         <th>Date</th>
         <th>Heure</th>
+        <th>Arbitres</th>
+        <th>Table</th>
       </tr>
     </thead>
     <tbody id="tbody-matchs"></tbody>
   </table>
 
-  <!-- Librairie XLSX pour lire les fichiers Excel -->
+  <!-- ATTRIBUTION -->
+  <h2>⚖️ Attribution des arbitres et tables</h2>
+  <button id="btnAssign">Calculer les arbitres et tables</button>
+
+  <!-- XLSX -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
-  <!-- Firebase + Firestore -->
+  <!-- FIREBASE -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
     import {
-      getFirestore, collection, getDocs, setDoc, doc
+      getFirestore, collection, getDocs, setDoc, doc, updateDoc
     } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
-    // 🔥 Config Firebase (adaptée à ton projet)
+    /* ---------------- CONFIG FIREBASE ---------------- */
     const firebaseConfig = {
       apiKey: "AIzaSyC3sqZaUL1ktECwag4c8c_y3wDMzG7ud2M",
       authDomain: "planning-da951.firebaseapp.com",
@@ -67,7 +77,25 @@
     const importStatus = document.getElementById("importStatus");
     const tbodyMatchs = document.getElementById("tbody-matchs");
     const btnReload = document.getElementById("btnReload");
+    const btnAssign = document.getElementById("btnAssign");
 
+    /* ---------------- OUTILS CATEGORIES ---------------- */
+    function ageRank(cat) {
+      const c = (cat || "").toUpperCase();
+      if (c.startsWith("U7")) return 1;
+      if (c.startsWith("U9")) return 2;
+      if (c.startsWith("U11")) return 3;
+      if (c.startsWith("U13")) return 4;
+      if (c.startsWith("U15")) return 5;
+      if (c.startsWith("U18")) return 6;
+      if (c.startsWith("SEN")) return 7;
+      return 0;
+    }
+
+    function isYouth(cat) { return ageRank(cat) >= 4 && ageRank(cat) <= 6; }
+    function isSenior(cat) { return ageRank(cat) >= 7; }
+
+    /* ---------------- IMPORT FICHIER EXCEL ---------------- */
     function extraireCategorie(division) {
       const match = division.match(/U\d+|Seniors/i);
       return match ? match[0].toUpperCase() : "";
@@ -97,18 +125,16 @@
       let index = 1;
 
       for (const row of rows) {
-        const division = row.Division || row["DIVISION"] || "";
-        const equipe1 = row["Equipe 1"] || row["Équipe 1"] || row["EQUIPE 1"] || "";
-        const equipe2 = row["Equipe 2"] || row["Équipe 2"] || row["EQUIPE 2"] || "";
-        const date = row.Date || row["DATE"] || "";
-        const heure = row.Heure || row["HEURE"] || "";
+        const division = row.Division || "";
+        const equipe1 = row["Equipe 1"] || row["Équipe 1"] || "";
+        const equipe2 = row["Equipe 2"] || row["Équipe 2"] || "";
+        const date = row.Date || "";
+        const heure = row.Heure || "";
 
         const equipeClub1 = extraireEquipeClub(equipe1);
         const equipeClub2 = extraireEquipeClub(equipe2);
 
-        if (!equipeClub1 && !equipeClub2) {
-          continue; // match sans Montaigu
-        }
+        if (!equipeClub1 && !equipeClub2) continue;
 
         const categorie = extraireCategorie(division);
 
@@ -122,6 +148,9 @@
           equipe_club: equipeClub1 || equipeClub2,
           equipe_reception: equipe1,
           equipe_exterieure: equipe2,
+          besoin_arbitres: true,
+          besoin_table: true,
+          officiel_arbitre: false,
           arbitres_assignes: [],
           table_assignes: []
         };
@@ -134,6 +163,7 @@
       await chargerMatchs();
     }
 
+    /* ---------------- AFFICHAGE MATCHS ---------------- */
     async function chargerMatchs() {
       tbodyMatchs.innerHTML = "";
       const snap = await getDocs(collection(db, "matchs"));
@@ -141,33 +171,119 @@
         const m = d.data();
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${m.division || ""}</td>
-          <td>${m.categorie || ""}</td>
-          <td>${m.equipe_club || ""}</td>
+          <td>${m.division}</td>
+          <td>${m.categorie}</td>
+          <td>${m.equipe_club}</td>
           <td>${m.domicile ? "Oui" : "Non"}</td>
           <td>${m.exterieur ? "Oui" : "Non"}</td>
-          <td>${m.equipe_reception || ""}</td>
-          <td>${m.equipe_exterieure || ""}</td>
-          <td>${m.date || ""}</td>
-          <td>${m.heure || ""}</td>
+          <td>${m.equipe_reception}</td>
+          <td>${m.equipe_exterieure}</td>
+          <td>${m.date}</td>
+          <td>${m.heure}</td>
+          <td>${(m.arbitres_assignes || []).join(", ")}</td>
+          <td>${(m.table_assignes || []).join(", ")}</td>
         `;
         tbodyMatchs.appendChild(tr);
       });
     }
 
-    btnImport.addEventListener("click", () => {
-      importerFichier().catch(err => {
-        console.error(err);
-        importStatus.textContent = "❌ Erreur lors de l'import (voir console).";
-      });
-    });
+    /* ---------------- ÉLIGIBILITÉ ---------------- */
+    function eligibleArbitre(lic, match) {
+      const catL = lic.categorie;
+      const catM = match.categorie;
 
-    btnReload.addEventListener("click", () => {
-      chargerMatchs().catch(console.error);
-    });
+      if (ageRank(catL) <= 3) return false;
 
-    // Chargement initial
-    chargerMatchs().catch(console.error);
+      if (isSenior(catL)) return true;
+
+      if (isYouth(catL)) {
+        if (lic.derogation_arbitrage) return true;
+        return ageRank(catM) < ageRank(catL);
+      }
+
+      return false;
+    }
+
+    function eligibleTable(lic, match) {
+      const catL = lic.categorie;
+      const catM = match.categorie;
+      const jour = (match.jour || "").toLowerCase();
+
+      if (ageRank(catL) <= 3) return false;
+
+      if (isSenior(catL)) return isSenior(catM);
+
+      if (isYouth(catL)) {
+        if (isSenior(catM) && jour.includes("dim")) return false;
+        return true;
+      }
+
+      return false;
+    }
+
+    /* ---------------- ATTRIBUTION ---------------- */
+    async function assignerPermanences() {
+      const licSnap = await getDocs(collection(db, "licencies"));
+      const licencies = [];
+      licSnap.forEach(d => licencies.push({ id: d.id, ...d.data(), charge: 0 }));
+
+      const matchSnap = await getDocs(collection(db, "matchs"));
+      const updates = [];
+
+      matchSnap.forEach(d => updates.push({ id: d.id, ...d.data() }));
+
+      for (const m of updates) {
+        if (!m.domicile) continue;
+
+        const arbitres = [];
+        const tables = [];
+
+        if (m.besoin_arbitres && !m.officiel_arbitre) {
+          const candidats = licencies
+            .filter(l => eligibleArbitre(l, m))
+            .sort((a, b) => a.charge - b.charge);
+
+          for (const c of candidats) {
+            if (arbitres.length >= 2) break;
+            arbitres.push(c.id);
+            c.charge++;
+          }
+        }
+
+        if (m.besoin_table) {
+          const candidats = licencies
+            .filter(l => eligibleTable(l, m))
+            .sort((a, b) => a.charge - b.charge);
+
+          for (const c of candidats) {
+            if (tables.length >= 2) break;
+            tables.push(c.id);
+            c.charge++;
+          }
+        }
+
+        m.arbitres_assignes = arbitres;
+        m.table_assignes = tables;
+      }
+
+      for (const m of updates) {
+        const ref = doc(db, "matchs", m.id);
+        await updateDoc(ref, {
+          arbitres_assignes: m.arbitres_assignes,
+          table_assignes: m.table_assignes
+        });
+      }
+
+      await chargerMatchs();
+      alert("Attribution terminée !");
+    }
+
+    /* ---------------- EVENTS ---------------- */
+    btnImport.addEventListener("click", () => importerFichier());
+    btnReload.addEventListener("click", () => chargerMatchs());
+    btnAssign.addEventListener("click", () => assignerPermanences());
+
+    chargerMatchs();
   </script>
 </body>
 </html>
