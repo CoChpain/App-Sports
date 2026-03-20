@@ -83,7 +83,20 @@
     const btnEquipes = document.getElementById("btnEquipes");
     const btnAssocier = document.getElementById("btnAssocier");
 
-    // --------- catégories / genre ---------
+    /* ---------------------------------------------------------
+       🔧 Correction : conversion date FR → ISO (YYYY-MM-DD)
+    --------------------------------------------------------- */
+    function convertirDateFRversISO(dateFR) {
+      if (!dateFR || typeof dateFR !== "string") return "";
+      const parts = dateFR.split("/");
+      if (parts.length !== 3) return "";
+      const [jour, mois, annee] = parts;
+      return `${annee}-${mois}-${jour}`;
+    }
+
+    /* ---------------------------------------------------------
+       Catégories / genre
+    --------------------------------------------------------- */
     function extraireCategorie(division) {
       const d = (division || "").toUpperCase();
       const matchJeune = d.match(/U(7|9|11|13|15|18)/);
@@ -120,9 +133,10 @@
     function isYouth(cat) { return ageRank(cat) >= 4 && ageRank(cat) <= 6; }
     function isSenior(cat) { return ageRank(cat) >= 7; }
 
-    // --------- analyse équipe licencié (avec categorie + equipe) ---------
+    /* ---------------------------------------------------------
+       Analyse équipe licencié
+    --------------------------------------------------------- */
     function analyserEquipeLicencie(lic) {
-      const cat = (lic.categorie || "").toUpperCase();
       const eq = (lic.equipe || "").toUpperCase();
 
       const matchJeune = eq.match(/U(7|9|11|13|15|18)(M|F)(\d+)/);
@@ -146,22 +160,12 @@
         };
       }
 
-      // fallback : si categorie est déjà U13/U15/U18/SENIORS et equipe finit par un chiffre
-      const matchNum = eq.match(/(\d+)$/);
-      if (cat && matchNum) {
-        const num = parseInt(matchNum[1]);
-        const genre = eq.includes("M") ? "M" : (eq.includes("F") ? "F" : "");
-        return {
-          categorie: cat,
-          genre: genre,
-          equipe: num
-        };
-      }
-
       return { categorie: "", genre: "", equipe: null };
     }
 
-    // --------- import matchs ---------
+    /* ---------------------------------------------------------
+       Import des matchs (avec date FR corrigée)
+    --------------------------------------------------------- */
     function extraireEquipeClub(nomEquipe) {
       const regex = new RegExp(`${CLUB}\\s*-\\s*(\\d+)`, "i");
       const match = nomEquipe.match(regex);
@@ -181,15 +185,17 @@
       const sheet = workbook.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
-      importStatus.textContent = "⏳ Analyse et import des matchs...";
+      importStatus.textContent = "⏳ Import des matchs...";
       let index = 1;
 
       for (const row of rows) {
         const division = row.Division || "";
         const equipe1 = row["Equipe 1"] || row["Équipe 1"] || "";
         const equipe2 = row["Equipe 2"] || row["Équipe 2"] || "";
-        const date = row.Date || "";
+        const dateFR = row.Date || "";
         const heure = row.Heure || "";
+
+        const dateISO = convertirDateFRversISO(dateFR);
 
         const equipeClub1 = extraireEquipeClub(equipe1);
         const equipeClub2 = extraireEquipeClub(equipe2);
@@ -202,7 +208,7 @@
           division,
           categorie,
           genre,
-          date,
+          date: dateISO,
           heure,
           domicile: !!equipeClub1,
           exterieur: !!equipeClub2,
@@ -224,7 +230,9 @@
       await chargerMatchs();
     }
 
-    // --------- affichage matchs ---------
+    /* ---------------------------------------------------------
+       Affichage des matchs
+    --------------------------------------------------------- */
     async function chargerMatchs() {
       tbodyMatchs.innerHTML = "";
       const snap = await getDocs(collection(db, "matchs"));
@@ -252,7 +260,9 @@
       });
     }
 
-    // --------- équipes ---------
+    /* ---------------------------------------------------------
+       Génération des équipes
+    --------------------------------------------------------- */
     async function genererEquipes() {
       const licSnap = await getDocs(collection(db, "licencies"));
       const equipes = {};
@@ -277,6 +287,9 @@
       alert("Équipes générées !");
     }
 
+    /* ---------------------------------------------------------
+       Associer matchs ↔ équipes
+    --------------------------------------------------------- */
     async function associerMatchsAuxEquipes() {
       const matchSnap = await getDocs(collection(db, "matchs"));
       for (const d of matchSnap.docs) {
@@ -310,7 +323,9 @@
       alert("Matchs associés aux équipes !");
     }
 
-    // --------- règles temps / extérieur ---------
+    /* ---------------------------------------------------------
+       Règles A & B
+    --------------------------------------------------------- */
     function estDansFenetre2h(matchLicencie, matchAffectation) {
       if (!matchLicencie || !matchLicencie.date || !matchLicencie.heure) return false;
       const t1 = new Date(matchLicencie.date + " " + matchLicencie.heure).getTime();
@@ -328,7 +343,9 @@
       return Math.abs(t2 - t1) <= 2 * 60 * 60 * 1000;
     }
 
-    // --------- éligibilité ---------
+    /* ---------------------------------------------------------
+       Éligibilité
+    --------------------------------------------------------- */
     function eligibleArbitreBase(lic, match) {
       const catL = lic.categorie;
       const catM = match.categorie;
@@ -350,7 +367,9 @@
       return false;
     }
 
-    // --------- attribution ---------
+    /* ---------------------------------------------------------
+       Attribution
+    --------------------------------------------------------- */
     async function assignerPermanences() {
       const licSnap = await getDocs(collection(db, "licencies"));
       const eqSnap = await getDocs(collection(db, "equipes"));
@@ -385,7 +404,7 @@
         return da - db;
       });
 
-      // seniors sur 2 matchs consécutifs
+          // seniors sur 2 matchs consécutifs
       for (let i = 0; i < updates.length - 1; i++) {
         const m1 = updates[i];
         const m2 = updates[i + 1];
@@ -408,9 +427,14 @@
           const senior = candidats[0];
           m1.arbitres_assignes = m1.arbitres_assignes || [];
           m2.arbitres_assignes = m2.arbitres_assignes || [];
-          if (m1.arbitres_assignes.length === 0) m1.arbitres_assignes.push(senior.id);
-          if (m2.arbitres_assignes.length === 0) m2.arbitres_assignes.push(senior.id);
-          senior.charge += 2;
+          if (!m1.arbitres_assignes.includes(senior.id)) {
+            m1.arbitres_assignes.push(senior.id);
+            senior.charge++;
+          }
+          if (!m2.arbitres_assignes.includes(senior.id)) {
+            m2.arbitres_assignes.push(senior.id);
+            senior.charge++;
+          }
         }
       }
 
@@ -421,6 +445,7 @@
         m.arbitres_assignes = m.arbitres_assignes || [];
         m.table_assignes = m.table_assignes || [];
 
+        // Arbitres
         if (m.besoin_arbitres && !m.officiel_arbitre) {
           const candidats = licencies
             .filter(l => {
@@ -441,6 +466,7 @@
           }
         }
 
+        // Table
         if (m.besoin_table) {
           const candidats = licencies
             .filter(l => {
@@ -462,6 +488,7 @@
         }
       }
 
+      // sauvegarde dans Firestore
       for (const m of updates) {
         const ref = doc(db, "matchs", m.id);
         await updateDoc(ref, {
@@ -474,7 +501,9 @@
       alert("Attribution terminée !");
     }
 
-    // --------- interface modif arbitres / table ---------
+    /* ---------------------------------------------------------
+       Interface modif arbitres / table
+    --------------------------------------------------------- */
     window.modifierArbitres = async function(idMatch) {
       const nouveau = prompt("IDs des arbitres (séparés par des virgules) :");
       if (!nouveau) return;
@@ -491,13 +520,16 @@
       chargerMatchs();
     };
 
-    // --------- events ---------
+    /* ---------------------------------------------------------
+       Événements
+    --------------------------------------------------------- */
     btnImport.addEventListener("click", () => importerFichier().catch(console.error));
     btnReload.addEventListener("click", () => chargerMatchs().catch(console.error));
     btnEquipes.addEventListener("click", () => genererEquipes().catch(console.error));
     btnAssocier.addEventListener("click", () => associerMatchsAuxEquipes().catch(console.error));
     btnAssign.addEventListener("click", () => assignerPermanences().catch(console.error));
 
+    // chargement initial
     chargerMatchs().catch(console.error);
   </script>
 </body>
