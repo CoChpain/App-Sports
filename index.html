@@ -1,4 +1,63 @@
-<script type="module">
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Planning MONTAIGU VENDÉE BASKET CLUB</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1, h2 { margin-bottom: 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: center; }
+    th { background: #f0f0f0; }
+    button { padding: 8px 14px; margin-top: 10px; cursor: pointer; }
+    #importStatus { margin-top: 10px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+
+  <h1>Planning MONTAIGU VENDÉE BASKET CLUB</h1>
+
+  <h2>📁 Déposer votre fichier de matchs</h2>
+  <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
+  <button id="btnImport">Importer dans Firestore</button>
+  <div id="importStatus"></div>
+
+  <h2>🧩 Gestion des équipes</h2>
+  <button id="btnEquipes">Générer les équipes</button>
+  <button id="btnAssocier">Associer matchs aux équipes</button>
+
+  <h2>📅 Matchs importés</h2>
+  <button id="btnReload">Recharger les matchs</button>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Division</th>
+        <th>Catégorie</th>
+        <th>Genre</th>
+        <th>Équipe club</th>
+        <th>Domicile</th>
+        <th>Extérieur</th>
+        <th>Réception</th>
+        <th>Extérieur</th>
+        <th>Date</th>
+        <th>Heure</th>
+        <th>Arbitres</th>
+        <th>Table</th>
+        <th>Actions arbitres</th>
+        <th>Actions table</th>
+      </tr>
+    </thead>
+    <tbody id="tbody-matchs"></tbody>
+  </table>
+
+  <h2>⚖️ Attribution des arbitres et tables</h2>
+  <button id="btnAssign">Calculer les arbitres et tables</button>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  
+  <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
 import {
   getFirestore, collection, getDocs, setDoc, doc, updateDoc
