@@ -120,10 +120,12 @@
     function isYouth(cat) { return ageRank(cat) >= 4 && ageRank(cat) <= 6; }
     function isSenior(cat) { return ageRank(cat) >= 7; }
 
-    // --------- analyse équipe licencié ---------
-    function analyserEquipeLicencie(code) {
-      const c = (code || "").toUpperCase();
-      const matchJeune = c.match(/U(7|9|11|13|15|18)(M|F)(\d+)/);
+    // --------- analyse équipe licencié (avec categorie + equipe) ---------
+    function analyserEquipeLicencie(lic) {
+      const cat = (lic.categorie || "").toUpperCase();
+      const eq = (lic.equipe || "").toUpperCase();
+
+      const matchJeune = eq.match(/U(7|9|11|13|15|18)(M|F)(\d+)/);
       if (matchJeune) {
         return {
           categorie: "U" + matchJeune[1],
@@ -131,7 +133,8 @@
           equipe: parseInt(matchJeune[3])
         };
       }
-      const matchSenior = c.match(/(RM|DM|NM|PRM|PNM|RF|DF|NF|PRF|PNF)(\d?)/);
+
+      const matchSenior = eq.match(/(RM|DM|NM|PRM|PNM|RF|DF|NF|PRF|PNF)(\d?)/);
       if (matchSenior) {
         const prefix = matchSenior[1];
         const num = matchSenior[2] ? parseInt(matchSenior[2]) : 1;
@@ -142,6 +145,19 @@
           equipe: num
         };
       }
+
+      // fallback : si categorie est déjà U13/U15/U18/SENIORS et equipe finit par un chiffre
+      const matchNum = eq.match(/(\d+)$/);
+      if (cat && matchNum) {
+        const num = parseInt(matchNum[1]);
+        const genre = eq.includes("M") ? "M" : (eq.includes("F") ? "F" : "");
+        return {
+          categorie: cat,
+          genre: genre,
+          equipe: num
+        };
+      }
+
       return { categorie: "", genre: "", equipe: null };
     }
 
@@ -242,7 +258,7 @@
       const equipes = {};
       licSnap.forEach(docSnap => {
         const lic = docSnap.data();
-        const info = analyserEquipeLicencie(lic.codeEquipe);
+        const info = analyserEquipeLicencie(lic);
         if (!info.categorie || !info.genre || !info.equipe) return;
         const key = `${info.categorie}${info.genre}${info.equipe}`;
         if (!equipes[key]) {
@@ -265,8 +281,8 @@
       const matchSnap = await getDocs(collection(db, "matchs"));
       for (const d of matchSnap.docs) {
         const m = d.data();
-        const key = `${m.categorie}${m.genre}${m.equipe_club}`;
         if (!m.categorie || !m.genre || !m.equipe_club) continue;
+        const key = `${m.categorie}${m.genre}${m.equipe_club}`;
         await updateDoc(doc(db, "equipes", key), {
           match_du_weekend: {
             date: m.date,
@@ -346,7 +362,7 @@
       const licencies = [];
       licSnap.forEach(d => {
         const lic = d.data();
-        const info = analyserEquipeLicencie(lic.codeEquipe);
+        const info = analyserEquipeLicencie(lic);
         const key = info.categorie && info.genre && info.equipe
           ? `${info.categorie}${info.genre}${info.equipe}` : null;
         licencies.push({
@@ -486,4 +502,3 @@
   </script>
 </body>
 </html>
-
