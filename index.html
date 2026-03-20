@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Planning arbitrage / table</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: center; }
+    th { background: #f0f0f0; }
+    button { padding: 8px 14px; margin-top: 10px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Planning du week-end</h1>
+
+  <button id="btn-assign">Calculer et attribuer les permanences</button>
+
+  <table id="table-matchs">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Heure</th>
+        <th>Catégorie</th>
+        <th>Réception</th>
+        <th>Extérieur</th>
+        <th>Arbitres</th>
+        <th>Table</th>
+      </tr>
+    </thead>
+    <tbody id="tbody-matchs">
+      <!-- lignes générées en JS -->
+    </tbody>
+  </table>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    // 🔥 1. Config Firebase (copie depuis ta console Firebase → Config Web)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import { 
+      getFirestore, collection, getDocs, doc, updateDoc 
+    } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyC3sqZaUL1ktECwag4c8c_y3wDMzG7ud2M",
+      authDomain: "planning-da951.firebaseapp.com",
+      projectId: "planning-da951",
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    const tbody = document.getElementById("tbody-matchs");
+    const btnAssign = document.getElementById("btn-assign");
+
+    // 🔥 2. Charger les matchs depuis Firestore
+    async function chargerMatchs() {
+      tbody.innerHTML = "";
+      const matchsSnap = await getDocs(collection(db, "matchs"));
+
+      matchsSnap.forEach(docSnap => {
+        const m = docSnap.data();
+        const tr = document.createElement("tr");
+        tr.dataset.id = docSnap.id;
+
+        tr.innerHTML = `
+          <td>${m.date || ""}</td>
+          <td>${m.heure || ""}</td>
+          <td>${m.categorie || ""}</td>
+          <td>${m.equipe_reception || ""}</td>
+          <td>${m.equipe_exterieure || ""}</td>
+          <td>${(m.arbitres_assignes || []).join(", ")}</td>
+          <td>${(m.table_assignes || []).join(", ")}</td>
+        `;
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    // 🔥 3. Fonction d’assignation (squelette)
+    async function assignerPermanences() {
+      // 1) Récupérer tous les licenciés
+      const licenciesSnap = await getDocs(collection(db, "licencies"));
+      const licencies = [];
+      licenciesSnap.forEach(d => licencies.push({ id: d.id, ...d.data() }));
+
+      // 2) Récupérer tous les matchs
+      const matchsSnap = await getDocs(collection(db, "matchs"));
+      const updates = [];
+
+      matchsSnap.forEach(docSnap => {
+        const m = docSnap.data();
+
+        // 👉 Ici tu mettras tes règles :
+        // - filtrer les candidats
+        // - choisir arbitres / table
+        // Pour l’instant, on met juste des tableaux vides ou un texte de test.
+
+        const arbitres = []; // ex: ["Dupont_Lucas"]
+        const tables = [];   // ex: ["Martin_Emma"]
+
+        updates.push({ id: docSnap.id, arbitres, tables });
+      });
+
+      // 3) Appliquer les mises à jour dans Firestore
+      for (const u of updates) {
+        const ref = doc(db, "matchs", u.id);
+        await updateDoc(ref, {
+          arbitres_assignes: u.arbitres,
+          table_assignes: u.tables
+        });
+      }
+
+      // 4) Recharger l’affichage
+      await chargerMatchs();
+      alert("Permanences recalculées (squelette).");
+    }
+
+    // 🔥 4. Lier le bouton
+    btnAssign.addEventListener("click", () => {
+      assignerPermanences().catch(console.error);
+    });
+
+    // 🔥 5. Chargement initial
+    chargerMatchs().catch(console.error);
+  </script>
+</body>
+</html>
